@@ -85,7 +85,7 @@ const config = {
     password: process.env.A1TOPUP_PASSWORD || '4ff6olp2',
     baseUrl: 'https://business.a1topup.com/recharge',
     defaultCircle: '5',
-    testMode: process.env.TEST_MODE === 'true'
+    testMode: process.env.TEST_MODE
   },
 
   // Static Exchange Rate
@@ -1705,6 +1705,13 @@ app.get('/api/topup/status/:sessionId', async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+app.get('/my-ip', (req, res) => {
+  res.json({
+    serverIP: req.socket.localAddress,
+    requestIP: req.ip,
+    headers: req.headers
+  });
 });
 
 // USER APIS (kept from previous version)
