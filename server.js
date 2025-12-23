@@ -1383,8 +1383,13 @@ app.post('/api/topup/verify', async (req, res, next) => {
 
     if (topupData.status === 'completed') {
       return res.json({ 
-        success: true, status: 'completed', message: '✅ Already completed',
-        recharge: { mobile: topupData.userDetails.mobile, transactionId: topupData.rechargeTransactionId }
+        success: true, 
+        status: 'completed', 
+        message: '✅ Already completed',
+        recharge: { 
+          mobile: topupData.userDetails.mobile, 
+          transactionId: topupData.rechargeTransactionId 
+        }
       });
     }
 
@@ -1401,15 +1406,13 @@ app.post('/api/topup/verify', async (req, res, next) => {
       const transaction = verification.data;
       
       if (transaction.status === 'success') {
-        // AMOUNT VERIFICATION (from main server pattern)
         const amountCheck = await verifyPaymentAmount(sessionId, transaction.amount);
         
         if (!amountCheck.isValid) {
           logger.error('❌ AMOUNT MISMATCH', {
             sessionId, reference,
             expected: amountCheck.expectedAmount,
-            paid: amountCheck.paidAmount,
-            difference: amountCheck.difference
+            paid: amountCheck.paidAmount
           });
           
           await FirestoreService.updateTopupStatus(sessionId, 'failed', {
@@ -1434,8 +1437,13 @@ app.post('/api/topup/verify', async (req, res, next) => {
     }
 
     if (!verified) {
-      await FirestoreService.updateTopupStatus(sessionId, 'failed', { paymentStatus: 'failed' });
-      return res.status(400).json({ success: false, error: 'Payment verification failed' });
+      await FirestoreService.updateTopupStatus(sessionId, 'failed', { 
+        paymentStatus: 'failed' 
+      });
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Payment verification failed' 
+      });
     }
 
     await FirestoreService.updateTopupStatus(sessionId, 'payment_verified', { 
@@ -1450,64 +1458,139 @@ app.post('/api/topup/verify', async (req, res, next) => {
 
     await FirestoreService.updateTopupStatus(sessionId, 'recharge_processing');
 
-    const rechargeResult = await A1TopupAPI.recharge(
-      topupData.userDetails.mobile,
-      topupData.transaction.network,
-      topupData.transaction.type,
-      topupData.transaction.rechargeAmountInr,
-      sessionId
-    );
-
-    if (rechargeResult.status !== 'Success') {
-      await FirestoreService.updateTopupStatus(sessionId, 'failed', {
-        rechargeStatus: 'failed', rechargeError: rechargeResult.message, requiresRefund: true
+    // ✅ FIX: Wrap in try-catch
+    let rechargeResult;
+    try {
+      rechargeResult = await A1TopupAPI.recharge(
+        topupData.userDetails.mobile,
+        topupData.transaction.network,
+        topupData.transaction.type,
+        topupData.transaction.rechargeAmountInr,
+        sessionId
+      );
+      
+      logger.info('✅ A1Topup response', { 
+        sessionId, 
+        status: rechargeResult.status,
+        fullResponse: rechargeResult
       });
+      
+    } catch (error) {
+      logger.error('❌ A1Topup threw error', {
+        sessionId,
+        errorMessage: error.message,
+        errorStack: error.stack
+      });
+      
+      // ✅ FIX: Safe error message (never undefined)
+      await FirestoreService.updateTopupStatus(sessionId, 'failed', {
+        rechargeStatus: 'failed',
+        rechargeError: error.message || 'Unknown A1Topup error',
+        requiresRefund: true
+      });
+      
       metrics.topups.failed++;
+      
       return res.status(500).json({ 
         success: false, 
-        error: 'Recharge failed: ' + rechargeResult.message, 
+        error: `Recharge failed: ${error.message}`, 
         paymentReceived: true, 
         refundRequired: true 
       });
     }
 
+    // ✅ FIX: Safe status check
+    if (rechargeResult.status !== 'Success') {
+      const failureData = {
+        rechargeStatus: 'failed',
+        requiresRefund: true
+      };
+      
+      // ✅ FIX: Build error safely (never undefined)
+      if (rechargeResult.message) {
+        failureData.rechargeError = rechargeResult.message;
+      } else if (rechargeResult.error) {
+        failureData.rechargeError = rechargeResult.error;
+      } else if (rechargeResult.msg) {
+        failureData.rechargeError = rechargeResult.msg;
+      } else if (rechargeResult.reason) {
+        failureData.rechargeError = rechargeResult.reason;
+      } else {
+        failureData.rechargeError = `Recharge failed with status: ${rechargeResult.status || 'Unknown'}`;
+      }
+      
+      logger.error('❌ Recharge failed', {
+        sessionId,
+        status: rechargeResult.status,
+        errorMessage: failureData.rechargeError,
+        fullResponse: rechargeResult
+      });
+      
+      await FirestoreService.updateTopupStatus(sessionId, 'failed', failureData);
+      
+      metrics.topups.failed++;
+      
+      return res.status(500).json({ 
+        success: false, 
+        error: `Recharge failed: ${failureData.rechargeError}`, 
+        paymentReceived: true, 
+        refundRequired: true 
+      });
+    }
+
+    // ✅ Success
     await FirestoreService.updateTopupStatus(sessionId, 'completed', {
-      status: 'completed', rechargeStatus: 'completed', 
-      rechargeTransactionId: rechargeResult.txid,
+      status: 'completed', 
+      rechargeStatus: 'completed', 
+      rechargeTransactionId: rechargeResult.txid || null,
+      rechargeOperatorId: rechargeResult.opid || null,
       completedAt: Date.now()
     });
 
     if (topupData.identifier && topupData.lpToEarn > 0) {
       await FirestoreService.awardLoyaltyPoints(
-        topupData.identifier, sessionId, topupData.lpToEarn, 
+        topupData.identifier, 
+        sessionId, 
+        topupData.lpToEarn, 
         topupData.transaction.rechargeAmountInr,
         `Earned from ₹${topupData.transaction.rechargeAmountInr} ${topupData.transaction.type} recharge`
       );
     }
 
     logger.info('✅ RECHARGE COMPLETED', sanitizeForLog({ 
-      sessionId, mobile: topupData.userDetails.mobile, 
-      lpEarned: topupData.lpToEarn, txid: rechargeResult.txid 
+      sessionId, 
+      mobile: topupData.userDetails.mobile, 
+      lpEarned: topupData.lpToEarn, 
+      txid: rechargeResult.txid 
     }));
     
     metrics.topups.completed++;
 
     res.json({
-      success: true, status: 'completed', message: '🎉 Recharge successful!',
+      success: true, 
+      status: 'completed', 
+      message: '🎉 Recharge successful!',
       recharge: {
-        mobile: topupData.userDetails.mobile, network: topupData.transaction.network, 
+        mobile: topupData.userDetails.mobile, 
+        network: topupData.transaction.network, 
         type: topupData.transaction.type,
         rechargeAmount: `₹${topupData.transaction.rechargeAmountInr}`,
-        transactionId: rechargeResult.txid, operatorId: rechargeResult.opid
+        transactionId: rechargeResult.txid || 'N/A', 
+        operatorId: rechargeResult.opid || 'N/A'
       },
       loyaltyReward: topupData.lpToEarn > 0 ? { lpEarned: topupData.lpToEarn } : null
     });
+    
   } catch (error) {
-    logger.error('Verify error', { error: error.message });
+    logger.error('❌ Verify endpoint error', { 
+      error: error.message, 
+      stack: error.stack 
+    });
     metrics.topups.failed++;
     next(error);
   }
 });
+
 
 // WEBHOOK - WITH SIGNATURE VERIFICATION (from main server)
 app.post("/api/webhook/paystack", express.raw({ type: 'application/json' }), async (req, res) => {
