@@ -1382,15 +1382,14 @@ app.post('/api/topup/verify', async (req, res, next) => {
     }
 
     if (topupData.status === 'completed') {
-      return res.json({ 
-        success: true, 
-        status: 'completed', 
-        message: '✅ Already completed',
-        recharge: { 
-          mobile: topupData.userDetails.mobile, 
-          transactionId: topupData.rechargeTransactionId 
-        }
+      res.json({
+        success: true,
+        status: 'completed',
+        message: 'Recharge successful!',
+        recharge: { mobile, network, type, rechargeAmount, transactionId, operatorId },
+        loyaltyReward: topupData.lpToEarn > 0 ? { lpEarned: topupData.lpToEarn } : null
       });
+      
     }
 
     // Verify with Paystack
